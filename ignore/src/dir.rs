@@ -99,9 +99,6 @@ struct IgnoreInner {
     parent: Option<Ignore>,
     /// Whether this is an absolute parent matcher, as added by add_parent.
     is_absolute_parent: bool,
-    /// The absolute base path of this matcher. Populated only if parent
-    /// directories are added.
-    absolute_base: Option<Arc<PathBuf>>,
     /// Explicit global ignore matchers specified by the caller.
     explicit_ignores: Arc<Vec<Gitignore>>,
     /// Ignore files used in addition to `.ignore`
@@ -182,7 +179,6 @@ impl Ignore {
             let (mut igtmp, err) = ig.add_child_path(parent);
             errs.maybe_push(err);
             igtmp.is_absolute_parent = true;
-            igtmp.absolute_base = Some(absolute_base.clone());
             ig = Ignore(Arc::new(igtmp));
             compiled.insert(parent.as_os_str().to_os_string(), ig.clone());
         }
@@ -248,7 +244,6 @@ impl Ignore {
             types: self.0.types.clone(),
             parent: Some(self.clone()),
             is_absolute_parent: false,
-            absolute_base: self.0.absolute_base.clone(),
             explicit_ignores: self.0.explicit_ignores.clone(),
             custom_ignore_filenames: self.0.custom_ignore_filenames.clone(),
             custom_ignore_matcher: custom_ig_matcher,
@@ -355,8 +350,7 @@ impl Ignore {
             }
             saw_git = saw_git || ig.0.has_git;
         }
-        if let Some(abs_parent_path) = self.absolute_base() {
-            let path = abs_parent_path.join(path);
+        if let Ok(path) = path.canonicalize() {
             for ig in self.parents().skip_while(|ig|!ig.0.is_absolute_parent) {
                 if m_custom_ignore.is_none() {
                     m_custom_ignore =
@@ -396,12 +390,6 @@ impl Ignore {
     /// Returns an iterator over parent ignore matchers, including this one.
     pub fn parents(&self) -> Parents {
         Parents(Some(self))
-    }
-
-    /// Returns the first absolute path of the first absolute parent, if
-    /// one exists.
-    fn absolute_base(&self) -> Option<&Path> {
-        self.0.absolute_base.as_ref().map(|p| &***p)
     }
 }
 
@@ -486,7 +474,6 @@ impl IgnoreBuilder {
             types: self.types.clone(),
             parent: None,
             is_absolute_parent: true,
-            absolute_base: None,
             explicit_ignores: Arc::new(self.explicit_ignores.clone()),
             custom_ignore_filenames: Arc::new(self.custom_ignore_filenames.clone()),
             custom_ignore_matcher: Gitignore::empty(),
