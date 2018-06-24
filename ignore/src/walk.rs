@@ -1494,6 +1494,7 @@ fn metadata_is_dir(md: &fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::env::set_current_dir;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -1676,10 +1677,12 @@ mod tests {
     #[test]
     fn gitignore_parent() {
         let td = TempDir::new("walk-test-").unwrap();
+        set_current_dir(&td).unwrap();
         mkdirp(td.path().join("a"));
-        wfile(td.path().join(".gitignore"), "foo");
+        wfile(td.path().join(".gitignore"), "foo\n/a/baz");
         wfile(td.path().join("a/foo"), "");
         wfile(td.path().join("a/bar"), "");
+        wfile(td.path().join("a/baz"), "");
 
         let root = td.path().join("a");
         assert_paths(&root, &WalkBuilder::new(&root), &["bar"]);

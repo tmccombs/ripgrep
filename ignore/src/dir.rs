@@ -14,6 +14,7 @@
 // well.
 
 use std::collections::HashMap;
+use std::env::current_dir;
 use std::ffi::{OsString, OsStr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -99,9 +100,9 @@ struct IgnoreInner {
     parent: Option<Ignore>,
     /// Whether this is an absolute parent matcher, as added by add_parent.
     is_absolute_parent: bool,
-    /// The absolute base path of this matcher. Populated only if parent
+    /// The working directory of this matcher. Populated only if parent
     /// directories are added.
-    absolute_base: Option<Arc<PathBuf>>,
+    working_dir: Option<Arc<PathBuf>>,
     /// Explicit global ignore matchers specified by the caller.
     explicit_ignores: Arc<Vec<Gitignore>>,
     /// Ignore files used in addition to `.ignore`
@@ -154,8 +155,8 @@ impl Ignore {
         if !self.is_root() {
             panic!("Ignore::add_parents called on non-root matcher");
         }
-        let absolute_base = match path.as_ref().canonicalize() {
-            Ok(path) => Arc::new(path),
+        let absolute_path = match path.as_ref().canonicalize() {
+            Ok(path) => path,
             Err(_) => {
                 // There's not much we can do here, so just return our
                 // existing matcher. We drop the error to be consistent
@@ -164,9 +165,10 @@ impl Ignore {
                 return (self.clone(), None);
             }
         };
+        let working_dir = Arc::new(current_dir().unwrap_or(absolute_path.clone()));
         // List of parents, from child to root.
         let mut parents = vec![];
-        let mut path = &**absolute_base;
+        let mut path = &*absolute_path;
         while let Some(parent) = path.parent() {
             parents.push(parent);
             path = parent;
@@ -182,7 +184,7 @@ impl Ignore {
             let (mut igtmp, err) = ig.add_child_path(parent);
             errs.maybe_push(err);
             igtmp.is_absolute_parent = true;
-            igtmp.absolute_base = Some(absolute_base.clone());
+            igtmp.working_dir = Some(working_dir.clone());
             ig = Ignore(Arc::new(igtmp));
             compiled.insert(parent.as_os_str().to_os_string(), ig.clone());
         }
@@ -248,7 +250,7 @@ impl Ignore {
             types: self.0.types.clone(),
             parent: Some(self.clone()),
             is_absolute_parent: false,
-            absolute_base: self.0.absolute_base.clone(),
+            working_dir: self.0.working_dir.clone(),
             explicit_ignores: self.0.explicit_ignores.clone(),
             custom_ignore_filenames: self.0.custom_ignore_filenames.clone(),
             custom_ignore_matcher: custom_ig_matcher,
@@ -355,8 +357,8 @@ impl Ignore {
             }
             saw_git = saw_git || ig.0.has_git;
         }
-        if let Some(abs_parent_path) = self.absolute_base() {
-            let path = abs_parent_path.join(path);
+        if let Some(working_dir) = self.working_dir() {
+            let path = working_dir.join(path);
             for ig in self.parents().skip_while(|ig|!ig.0.is_absolute_parent) {
                 if m_custom_ignore.is_none() {
                     m_custom_ignore =
@@ -398,10 +400,9 @@ impl Ignore {
         Parents(Some(self))
     }
 
-    /// Returns the first absolute path of the first absolute parent, if
-    /// one exists.
-    fn absolute_base(&self) -> Option<&Path> {
-        self.0.absolute_base.as_ref().map(|p| &***p)
+    /// Returns the working directory
+    fn working_dir(&self) -> Option<&Path> {
+        self.0.working_dir.as_ref().map(|p| &***p)
     }
 }
 
@@ -486,7 +487,7 @@ impl IgnoreBuilder {
             types: self.types.clone(),
             parent: None,
             is_absolute_parent: true,
-            absolute_base: None,
+            working_dir: None,
             explicit_ignores: Arc::new(self.explicit_ignores.clone()),
             custom_ignore_filenames: Arc::new(self.custom_ignore_filenames.clone()),
             custom_ignore_matcher: Gitignore::empty(),
@@ -622,6 +623,7 @@ pub fn create_gitignore<T: AsRef<OsStr>>(
 
 #[cfg(test)]
 mod tests {
+    use std::env::set_current_dir;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -874,18 +876,21 @@ mod tests {
         let td = TempDir::new("ignore-test-").unwrap();
         mkdirp(td.path().join(".git"));
         mkdirp(td.path().join("src/llvm"));
-        wfile(td.path().join(".gitignore"), "/llvm/\nfoo");
+        wfile(td.path().join(".gitignore"), "/llvm/\nfoo\n/src/vendor");
 
+        set_current_dir(&td).unwrap();
         let ig0 = IgnoreBuilder::new().build();
         let (ig1, err) = ig0.add_parents(td.path().join("src"));
         assert!(err.is_none());
         let (ig2, err) = ig1.add_child("src");
         assert!(err.is_none());
 
-        assert!(ig1.matched("llvm", true).is_none());
-        assert!(ig2.matched("llvm", true).is_none());
+
+        assert!(ig1.matched("llvm", true).is_ignore());
         assert!(ig2.matched("src/llvm", true).is_none());
         assert!(ig2.matched("foo", false).is_ignore());
         assert!(ig2.matched("src/foo", false).is_ignore());
+        assert!(ig2.matched("src/vendor", true).is_ignore());
     }
+
 }
