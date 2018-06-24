@@ -560,6 +560,7 @@ impl WalkBuilder {
             ig: ig_root.clone(),
             max_filesize: self.max_filesize,
             skip: self.skip.clone(),
+            base_path: PathBuf::new(),
         }
     }
 
@@ -853,6 +854,7 @@ pub struct Walk {
     ig: Ignore,
     max_filesize: Option<u64>,
     skip: Option<Arc<Handle>>,
+    base_path: PathBuf,
 }
 
 impl Walk {
@@ -877,7 +879,8 @@ impl Walk {
         }
         let is_dir = ent.file_type().map_or(false, |ft| ft.is_dir());
         let max_size = self.max_filesize;
-        let should_skip_path = skip_path(&self.ig, ent.path(), is_dir);
+        let path = relative_path(ent.path(), &self.base_path);
+        let should_skip_path = skip_path(&self.ig, path, is_dir);
         let should_skip_filesize = if !is_dir && max_size.is_some() {
             skip_filesize(max_size.unwrap(), ent.path(), &ent.metadata().ok())
         } else {
@@ -905,7 +908,7 @@ impl Iterator for Walk {
                         Some((path, Some(it))) => {
                             self.it = Some(it);
                             if path.is_dir() {
-                                let (ig, err) = self.ig_root.add_parents(path);
+                                let (ig, err) = self.ig_root.add_parents(&path);
                                 self.ig = ig;
                                 if let Some(err) = err {
                                     return Some(Err(err));
@@ -913,6 +916,7 @@ impl Iterator for Walk {
                             } else {
                                 self.ig = self.ig_root.clone();
                             }
+                            self.base_path = path
                         }
                     }
                     continue;
@@ -1083,6 +1087,7 @@ impl WalkParallel {
         // Note that we only send directories. For files, we send to them the
         // callback directly.
         for path in self.paths {
+            let base_path = Arc::new(path.clone());
             let (dent, root_device) =
                 if path == Path::new("-") {
                     (DirEntry::new_stdin(), None)
@@ -1118,6 +1123,7 @@ impl WalkParallel {
                 dent: dent,
                 ignore: self.ig_root.clone(),
                 root_device: root_device,
+                base_path: base_path,
             }));
             any_work = true;
         }
@@ -1186,6 +1192,8 @@ struct Work {
     /// The root device number. When present, only files with the same device
     /// number should be considered.
     root_device: Option<u64>,
+    /// The base path that each DirEntry is relative to.
+    base_path: Arc<PathBuf>,
 }
 
 impl Work {
@@ -1347,6 +1355,7 @@ impl Worker {
                     &work.ignore,
                     depth + 1,
                     work.root_device,
+                    work.base_path.clone(),
                     result,
                 );
                 if state.is_quit() {
@@ -1374,6 +1383,7 @@ impl Worker {
         ig: &Ignore,
         depth: usize,
         root_device: Option<u64>,
+        base_path: Arc<PathBuf>,
         result: Result<fs::DirEntry, io::Error>,
     ) -> WalkState {
         let fs_dent = match result {
@@ -1414,7 +1424,7 @@ impl Worker {
         }
         let is_dir = dent.is_dir();
         let max_size = self.max_filesize;
-        let should_skip_path = skip_path(ig, dent.path(), is_dir);
+        let should_skip_path = skip_path(ig, relative_path(dent.path(), &base_path), is_dir);
         let should_skip_filesize =
             if !is_dir && max_size.is_some() {
                 skip_filesize(
@@ -1431,6 +1441,7 @@ impl Worker {
                 dent: dent,
                 ignore: ig.clone(),
                 root_device: root_device,
+                base_path: base_path,
             }));
         }
         WalkState::Continue
@@ -1618,6 +1629,14 @@ fn skip_path(
     }
 }
 
+/// Remove the `base` path components from the beginning of
+/// `path`, if applicable. This will change `path` to be relative
+/// to `base` if both `path` and `base` are relativet to the current
+/// directory
+fn relative_path<'a>(path: &'a Path, base: &'a Path) -> &'a Path {
+    path.strip_prefix(base).unwrap_or(path)
+}
+
 /// Returns a handle to stdout for filtering search.
 ///
 /// A handle is returned if and only if stdout is being redirected to a file.
@@ -1697,6 +1716,7 @@ fn device_num<P: AsRef<Path>>(_: P)-> io::Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::env::set_current_dir;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -1904,12 +1924,29 @@ mod tests {
         let td = TempDir::new("walk-test-").unwrap();
         mkdirp(td.path().join(".git"));
         mkdirp(td.path().join("a"));
-        wfile(td.path().join(".gitignore"), "foo");
+        wfile(td.path().join(".gitignore"), "foo\n/a/baz");
         wfile(td.path().join("a/foo"), "");
         wfile(td.path().join("a/bar"), "");
+        wfile(td.path().join("a/baz"), "");
 
         let root = td.path().join("a");
         assert_paths(&root, &WalkBuilder::new(&root), &["bar"]);
+    }
+
+    #[test]
+    fn gitignore_parent_relative() {
+        let td = TempDir::new("walk-test-").unwrap();
+        mkdirp(td.path().join(".git"));
+        mkdirp(td.path().join("a"));
+        wfile(td.path().join(".gitignore"), "foo\n/a/baz");
+        wfile(td.path().join(".gitignore"), "foo\n/a/baz");
+        wfile(td.path().join("a/foo"), "");
+        wfile(td.path().join("a/bar"), "");
+        wfile(td.path().join("a/baz"), "");
+
+        set_current_dir(td.path()).unwrap();
+        let root = "a".as_ref();
+        assert_paths(root, &WalkBuilder::new(root), &["bar"]);
     }
 
     #[test]
