@@ -22,7 +22,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use ignore::types::{FileTypeDef, Types, TypesBuilder};
 use ignore;
 use printer::{ColorSpecs, Printer};
-use unescape::unescape;
+use unescape::{escape, unescape};
 use worker::{Worker, WorkerBuilder};
 
 use config;
@@ -36,6 +36,7 @@ pub struct Args {
     after_context: usize,
     before_context: usize,
     byte_offset: bool,
+    can_match: bool,
     color_choice: termcolor::ColorChoice,
     colors: ColorSpecs,
     column: bool,
@@ -58,10 +59,11 @@ pub struct Args {
     line_per_match: bool,
     max_columns: Option<usize>,
     max_count: Option<u64>,
+    max_depth: Option<usize>,
     max_filesize: Option<u64>,
-    maxdepth: Option<usize>,
     mmap: bool,
     no_ignore: bool,
+    no_ignore_global: bool,
     no_ignore_messages: bool,
     no_ignore_parent: bool,
     no_ignore_vcs: bool,
@@ -80,6 +82,7 @@ pub struct Args {
     types: Types,
     with_filename: bool,
     search_zip_files: bool,
+    preprocessor: Option<PathBuf>,
     stats: bool
 }
 
@@ -218,9 +221,8 @@ impl Args {
 
     /// Returns true if the given arguments are known to never produce a match.
     pub fn never_match(&self) -> bool {
-        self.max_count == Some(0)
+        !self.can_match || self.max_count == Some(0)
     }
-
 
     /// Returns whether ripgrep should track stats for this run
     pub fn stats(&self) -> bool {
@@ -288,6 +290,7 @@ impl Args {
             .quiet(self.quiet)
             .text(self.text)
             .search_zip_files(self.search_zip_files)
+            .preprocessor(self.preprocessor.clone())
             .build()
     }
 
@@ -345,11 +348,13 @@ impl Args {
 
         wd.follow_links(self.follow);
         wd.hidden(!self.hidden);
-        wd.max_depth(self.maxdepth);
+        wd.max_depth(self.max_depth);
         wd.max_filesize(self.max_filesize);
         wd.overrides(self.glob_overrides.clone());
         wd.types(self.types.clone());
-        wd.git_global(!self.no_ignore && !self.no_ignore_vcs);
+        wd.git_global(
+            !self.no_ignore && !self.no_ignore_vcs && !self.no_ignore_global
+        );
         wd.git_ignore(!self.no_ignore && !self.no_ignore_vcs);
         wd.git_exclude(!self.no_ignore && !self.no_ignore_vcs);
         wd.ignore(!self.no_ignore);
@@ -380,11 +385,13 @@ impl<'a> ArgMatches<'a> {
         let (before_context, after_context) = self.contexts()?;
         let (count, count_matches) = self.counts();
         let quiet = self.is_present("quiet");
+        let (grep, can_match) = self.grep()?;
         let args = Args {
             paths: paths,
             after_context: after_context,
             before_context: before_context,
             byte_offset: self.is_present("byte-offset"),
+            can_match: can_match,
             color_choice: self.color_choice(),
             colors: self.color_specs()?,
             column: self.column(),
@@ -398,7 +405,7 @@ impl<'a> ArgMatches<'a> {
             files: self.is_present("files"),
             follow: self.is_present("follow"),
             glob_overrides: self.overrides()?,
-            grep: self.grep()?,
+            grep: grep,
             heading: self.heading(),
             hidden: self.hidden(),
             ignore_files: self.ignore_files(),
@@ -407,10 +414,11 @@ impl<'a> ArgMatches<'a> {
             line_per_match: self.is_present("vimgrep"),
             max_columns: self.usize_of_nonzero("max-columns")?,
             max_count: self.usize_of("max-count")?.map(|n| n as u64),
+            max_depth: self.usize_of("max-depth")?,
             max_filesize: self.max_filesize()?,
-            maxdepth: self.usize_of("maxdepth")?,
             mmap: mmap,
             no_ignore: self.no_ignore(),
+            no_ignore_global: self.no_ignore_global(),
             no_ignore_messages: self.is_present("no-ignore-messages"),
             no_ignore_parent: self.no_ignore_parent(),
             no_ignore_vcs: self.no_ignore_vcs(),
@@ -429,6 +437,7 @@ impl<'a> ArgMatches<'a> {
             types: self.types()?,
             with_filename: with_filename,
             search_zip_files: self.is_present("search-zip"),
+            preprocessor: self.preprocessor(),
             stats: self.stats()
         };
         if args.mmap {
@@ -484,17 +493,6 @@ impl<'a> ArgMatches<'a> {
         }
     }
 
-    /// Return the pattern that should be used for searching.
-    ///
-    /// If multiple -e/--regexp flags are given, then they are all collapsed
-    /// into one pattern.
-    ///
-    /// If any part of the pattern isn't valid UTF-8, then an error is
-    /// returned.
-    fn pattern(&self) -> Result<String> {
-        Ok(self.patterns()?.join("|"))
-    }
-
     /// Get a sequence of all available patterns from the command line.
     /// This includes reading the -e/--regexp and -f/--file flags.
     ///
@@ -544,8 +542,6 @@ impl<'a> ArgMatches<'a> {
         // match first, and we wouldn't get colours in the output
         if self.is_present("passthru") && !self.is_present("count") {
             pats.push("^".to_string())
-        } else if pats.is_empty() {
-            pats.push(self.empty_pattern())
         }
         Ok(pats)
     }
@@ -722,6 +718,19 @@ impl<'a> ArgMatches<'a> {
         }
     }
 
+    /// Returns the preprocessor command
+    fn preprocessor(&self) -> Option<PathBuf> {
+        if let Some(path) = self.value_of_os("pre") {
+            if path.is_empty() {
+                None
+            } else {
+                Some(Path::new(path).to_path_buf())
+            }
+        } else {
+            None
+        }
+    }
+
     /// Returns the unescaped path separator in UTF-8 bytes.
     fn path_separator(&self) -> Result<Option<u8>> {
         match self.value_of_lossy("path-separator") {
@@ -733,7 +742,12 @@ impl<'a> ArgMatches<'a> {
                 } else if sep.len() > 1 {
                     Err(From::from(format!(
                         "A path separator must be exactly one byte, but \
-                         the given separator is {} bytes.", sep.len())))
+                         the given separator is {} bytes: {}\n\
+                         In some shells on Windows '/' is automatically \
+                         expanded. Use '//' instead.",
+                         sep.len(),
+                         escape(&sep),
+                    )))
                 } else {
                     Ok(Some(sep[0]))
                 }
@@ -876,7 +890,10 @@ impl<'a> ArgMatches<'a> {
     ///
     /// If there was a problem extracting the pattern from the command line
     /// flags, then an error is returned.
-    fn grep(&self) -> Result<Grep> {
+    ///
+    /// If no match can ever occur, then `false` is returned. Otherwise,
+    /// `true` is returned.
+    fn grep(&self) -> Result<(Grep, bool)> {
         let smart =
             self.is_present("smart-case")
             && !self.is_present("ignore-case")
@@ -884,7 +901,9 @@ impl<'a> ArgMatches<'a> {
         let casei =
             self.is_present("ignore-case")
             && !self.is_present("case-sensitive");
-        let mut gb = GrepBuilder::new(&self.pattern()?)
+        let pats = self.patterns()?;
+        let ok = !pats.is_empty();
+        let mut gb = GrepBuilder::new(&pats.join("|"))
             .case_smart(smart)
             .case_insensitive(casei)
             .line_terminator(b'\n');
@@ -895,7 +914,7 @@ impl<'a> ArgMatches<'a> {
         if let Some(limit) = self.regex_size_limit()? {
             gb = gb.size_limit(limit);
         }
-        Ok(gb.build()?)
+        Ok((gb.build()?, ok))
     }
 
     /// Builds the set of glob overrides from the command line flags.
@@ -996,6 +1015,11 @@ impl<'a> ArgMatches<'a> {
     fn no_ignore(&self) -> bool {
         self.is_present("no-ignore")
         || self.occurrences_of("unrestricted") >= 1
+    }
+
+    /// Returns true if global ignore files should be ignored.
+    fn no_ignore_global(&self) -> bool {
+        self.is_present("no-ignore-global") || self.no_ignore()
     }
 
     /// Returns true if parent ignore files should be ignored.

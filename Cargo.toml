@@ -1,6 +1,6 @@
 [package]
 name = "ripgrep"
-version = "0.8.1"  #:version
+version = "0.9.0"  #:version
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 description = """
 ripgrep is a line-oriented search tool that recursively searches your current
@@ -13,7 +13,7 @@ repository = "https://github.com/BurntSushi/ripgrep"
 readme = "README.md"
 keywords = ["regex", "grep", "egrep", "search", "pattern"]
 categories = ["command-line-utilities", "text-processing"]
-license = "Unlicense/MIT"
+license = "Unlicense OR MIT"
 exclude = ["HomebrewFormula"]
 build = "build.rs"
 autotests = false
@@ -32,12 +32,13 @@ name = "integration"
 path = "tests/tests.rs"
 
 [workspace]
-members = ["grep", "globset", "ignore", "termcolor", "wincolor"]
+members = ["grep", "globset", "ignore"]
 
 [dependencies]
-atty = "0.2.9"
-bytecount = "0.3.1"
-encoding_rs = "0.7"
+atty = "0.2.11"
+bytecount = "0.3.2"
+encoding_rs = "0.8"
+encoding_rs_io = "0.1"
 globset = { version = "0.4.0", path = "globset" }
 grep = { version = "0.1.8", path = "grep" }
 ignore = { version = "0.4.0", path = "ignore" }
@@ -49,7 +50,7 @@ memmap = "0.6"
 num_cpus = "1"
 regex = "1"
 same-file = "1"
-termcolor = { version = "0.3.4", path = "termcolor" }
+termcolor = "1"
 
 [dependencies.clap]
 version = "2.29.4"
@@ -69,13 +70,13 @@ default-features = false
 features = ["suggestions", "color"]
 
 [features]
-avx-accel = ["bytecount/avx-accel", "regex/unstable"]
+avx-accel = [
+  "bytecount/avx-accel",
+]
 simd-accel = [
   "bytecount/simd-accel",
   "encoding_rs/simd-accel",
-  "regex/unstable",
 ]
-unstable = ["regex/unstable"]
 
 [profile.release]
 debug = true

@@ -33,7 +33,8 @@ const USAGE: &str = "
     rg [OPTIONS] PATTERN [PATH ...]
     rg [OPTIONS] [-e PATTERN ...] [-f PATTERNFILE ...] [PATH ...]
     rg [OPTIONS] --files [PATH ...]
-    rg [OPTIONS] --type-list";
+    rg [OPTIONS] --type-list
+    command | rg [OPTIONS] PATTERN";
 
 const TEMPLATE: &str = "\
 {bin} {version}
@@ -521,11 +522,12 @@ pub fn all_args_and_flags() -> Vec<RGArg> {
     flag_line_regexp(&mut args);
     flag_max_columns(&mut args);
     flag_max_count(&mut args);
+    flag_max_depth(&mut args);
     flag_max_filesize(&mut args);
-    flag_maxdepth(&mut args);
     flag_mmap(&mut args);
     flag_no_config(&mut args);
     flag_no_ignore(&mut args);
+    flag_no_ignore_global(&mut args);
     flag_no_ignore_messages(&mut args);
     flag_no_ignore_parent(&mut args);
     flag_no_ignore_vcs(&mut args);
@@ -534,6 +536,7 @@ pub fn all_args_and_flags() -> Vec<RGArg> {
     flag_only_matching(&mut args);
     flag_path_separator(&mut args);
     flag_passthru(&mut args);
+    flag_pre(&mut args);
     flag_pretty(&mut args);
     flag_quiet(&mut args);
     flag_regex_size_limit(&mut args);
@@ -909,9 +912,17 @@ fn flag_fixed_strings(args: &mut Vec<RGArg>) {
 Treat the pattern as a literal string instead of a regular expression. When
 this flag is used, special regular expression meta characters such as .(){}*+
 do not need to be escaped.
+
+This flag can be disabled with --no-fixed-strings.
 ");
     let arg = RGArg::switch("fixed-strings").short("F")
-        .help(SHORT).long_help(LONG);
+        .help(SHORT).long_help(LONG)
+        .overrides("no-fixed-strings");
+    args.push(arg);
+
+    let arg = RGArg::switch("no-fixed-strings")
+        .hidden()
+        .overrides("fixed-strings");
     args.push(arg);
 }
 
@@ -1122,6 +1133,23 @@ Limit the number of matching lines per file searched to NUM.
     args.push(arg);
 }
 
+fn flag_max_depth(args: &mut Vec<RGArg>) {
+    const SHORT: &str = "Descend at most NUM directories.";
+    const LONG: &str = long!("\
+Limit the depth of directory traversal to NUM levels beyond the paths given. A
+value of zero only searches the explicitly given paths themselves.
+
+For example, 'rg --max-depth 0 dir/' is a no-op because dir/ will not be
+descended into. 'rg --max-depth 1 dir/' will search only the direct children of
+'dir'.
+");
+    let arg = RGArg::flag("max-depth", "NUM")
+        .help(SHORT).long_help(LONG)
+        .alias("maxdepth")
+        .number();
+    args.push(arg);
+}
+
 fn flag_max_filesize(args: &mut Vec<RGArg>) {
     const SHORT: &str = "Ignore files larger than NUM in size.";
     const LONG: &str = long!("\
@@ -1135,22 +1163,6 @@ Examples: --max-filesize 50K or --max-filesize 80M
 ");
     let arg = RGArg::flag("max-filesize", "NUM+SUFFIX?")
         .help(SHORT).long_help(LONG);
-    args.push(arg);
-}
-
-fn flag_maxdepth(args: &mut Vec<RGArg>) {
-    const SHORT: &str = "Descend at most NUM directories.";
-    const LONG: &str = long!("\
-Limit the depth of directory traversal to NUM levels beyond the paths given. A
-value of zero only searches the explicitly given paths themselves.
-
-For example, 'rg --maxdepth 0 dir/' is a no-op because dir/ will not be
-descended into. 'rg --maxdepth 1 dir/' will search only the direct children of
-'dir'.
-");
-    let arg = RGArg::flag("maxdepth", "NUM")
-        .help(SHORT).long_help(LONG)
-        .number();
     args.push(arg);
 }
 
@@ -1216,6 +1228,26 @@ This flag can be disabled with the --ignore flag.
     let arg = RGArg::switch("ignore")
         .hidden()
         .overrides("no-ignore");
+    args.push(arg);
+}
+
+fn flag_no_ignore_global(args: &mut Vec<RGArg>) {
+    const SHORT: &str = "Don't respect global ignore files.";
+    const LONG: &str = long!("\
+Don't respect ignore files that come from \"global\" sources such as git's
+`core.excludesFile` configuration option (which defaults to
+`$HOME/.config/git/ignore).
+
+This flag can be disabled with the --ignore-global flag.
+");
+    let arg = RGArg::switch("no-ignore-global")
+        .help(SHORT).long_help(LONG)
+        .overrides("ignore-global");
+    args.push(arg);
+
+    let arg = RGArg::switch("ignore-global")
+        .hidden()
+        .overrides("no-ignore-global");
     args.push(arg);
 }
 
@@ -1370,6 +1402,9 @@ fn flag_quiet(args: &mut Vec<RGArg>) {
 Do not print anything to stdout. If a match is found in a file, then ripgrep
 will stop searching. This is useful when ripgrep is used only for its exit
 code (which will be an error if no matches are found).
+
+When --files is used, then ripgrep will stop finding files after finding the
+first file that matches all ignore rules.
 ");
     let arg = RGArg::switch("quiet").short("q")
         .help(SHORT).long_help(LONG);
@@ -1436,7 +1471,7 @@ This flag can be used with the -o/--only-matching flag.
 fn flag_search_zip(args: &mut Vec<RGArg>) {
     const SHORT: &str = "Search in compressed files.";
     const LONG: &str = long!("\
-Search in compressed files. Currently gz, bz2, xz, and lzma files are
+Search in compressed files. Currently gz, bz2, xz, lzma and lz4 files are
 supported. This option expects the decompression binaries to be available in
 your PATH.
 
@@ -1444,12 +1479,71 @@ This flag can be disabled with --no-search-zip.
 ");
     let arg = RGArg::switch("search-zip").short("z")
         .help(SHORT).long_help(LONG)
-        .overrides("no-search-zip");
+        .overrides("no-search-zip")
+        .overrides("pre");
     args.push(arg);
 
     let arg = RGArg::switch("no-search-zip")
         .hidden()
         .overrides("search-zip");
+    args.push(arg);
+}
+
+fn flag_pre(args: &mut Vec<RGArg>) {
+    const SHORT: &str = "search outputs of COMMAND FILE for each FILE";
+    const LONG: &str = long!("\
+For each input FILE, search the standard output of COMMAND FILE rather than the
+contents of FILE. This option expects the COMMAND program to either be an
+absolute path or to be available in your PATH. Either an empty string COMMAND
+or the `--no-pre` flag will disable this behavior.
+
+    WARNING: When this flag is set, ripgrep will unconditionally spawn a
+    process for every file that is searched. Therefore, this can incur an
+    unnecessarily large performance penalty if you don't otherwise need the
+    flexibility offered by this flag.
+
+A preprocessor is not run when ripgrep is searching stdin.
+
+When searching over sets of files that may require one of several decoders
+as preprocessors, COMMAND should be a wrapper program or script which first
+classifies FILE based on magic numbers/content or based on the FILE name and
+then dispatches to an appropriate preprocessor. Each COMMAND also has its
+standard input connected to FILE for convenience.
+
+For example, a shell script for COMMAND might look like:
+
+    case \"$1\" in
+    *.pdf)
+        exec pdftotext \"$1\" -
+        ;;
+    *)
+        case $(file \"$1\") in
+        *Zstandard*)
+            exec pzstd -cdq
+            ;;
+        *)
+            exec cat
+            ;;
+        esac
+        ;;
+    esac
+
+The above script uses `pdftotext` to convert a PDF file to plain text. For
+all other files, the script uses the `file` utility to sniff the type of the
+file based on its contents. If it is a compressed file in the Zstandard format,
+then `pzstd` is used to decompress the contents to stdout.
+
+This overrides the -z/--search-zip flag.
+");
+    let arg = RGArg::flag("pre", "COMMAND")
+        .help(SHORT).long_help(LONG)
+        .overrides("no-pre")
+        .overrides("search-zip");
+    args.push(arg);
+
+    let arg = RGArg::switch("no-pre")
+        .hidden()
+        .overrides("pre");
     args.push(arg);
 }
 

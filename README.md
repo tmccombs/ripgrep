@@ -106,7 +106,10 @@ increases the times to `2.640s` for ripgrep and `10.277s` for GNU grep.
   automatically detecting UTF-16 is provided. Other text encodings must be
   specifically specified with the `-E/--encoding` flag.)
 * ripgrep supports searching files compressed in a common format (gzip, xz,
-  lzma or bzip2 current) with the `-z/--search-zip` flag.
+  lzma, bzip2 or lz4) with the `-z/--search-zip` flag.
+* ripgrep supports arbitrary input preprocessing filters which could be PDF
+  text extraction, less supported decompression, decrypting, automatic encoding
+  detection and so on.
 
 In other words, use ripgrep if you like speed, filtering by default, fewer
 bugs, and Unicode support.
@@ -268,8 +271,14 @@ then ripgrep can be installed using a binary `.deb` file provided in each
 ripgrep is not in the official Debian or Ubuntu repositories.
 
 ```
-$ curl -LO https://github.com/BurntSushi/ripgrep/releases/download/0.8.1/ripgrep_0.8.1_amd64.deb
-$ sudo dpkg -i ripgrep_0.8.1_amd64.deb
+$ curl -LO https://github.com/BurntSushi/ripgrep/releases/download/0.9.0/ripgrep_0.9.0_amd64.deb
+$ sudo dpkg -i ripgrep_0.9.0_amd64.deb
+```
+
+If you run Debian Buster (currently Debian testing) or Debian sid, ripgrep is 
+[officially maintained by Debian](https://tracker.debian.org/pkg/rust-ripgrep).
+```
+$ sudo apt-get install ripgrep
 ```
 
 (N.B. Various snaps for ripgrep on Ubuntu are also available, but none of them
@@ -296,7 +305,7 @@ If you're a **NetBSD** user, then you can install ripgrep from [pkgsrc](http://p
 ```
 
 If you're a **Rust programmer**, ripgrep can be installed with `cargo`.
-* Note that the minimum supported version of Rust for ripgrep is **1.20**,
+* Note that the minimum supported version of Rust for ripgrep is **1.23.0**,
   although ripgrep may work with older versions.
 * Note that the binary may be bigger than expected because it contains debug
   symbols. This is intentional. To remove debug symbols and therefore reduce
@@ -317,7 +326,7 @@ ripgrep isn't currently in any other package repositories.
 
 ripgrep is written in Rust, so you'll need to grab a
 [Rust installation](https://www.rust-lang.org/) in order to compile it.
-ripgrep compiles with Rust 1.20 (stable) or newer. Building is easy:
+ripgrep compiles with Rust 1.23.0 (stable) or newer. Building is easy:
 
 ```
 $ git clone https://github.com/BurntSushi/ripgrep

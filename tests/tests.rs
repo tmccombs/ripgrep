@@ -590,6 +590,7 @@ sherlock!(no_ignore_hidden, "Sherlock", ".", |wd: WorkDir, mut cmd: Command| {
 });
 
 sherlock!(ignore_git, "Sherlock", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "sherlock\n");
     wd.assert_err(&mut cmd);
 });
@@ -710,6 +711,7 @@ sherlock!(no_parent_ignore_git, "Sherlock", ".",
 |wd: WorkDir, mut cmd: Command| {
     // Set up a directory hierarchy like this:
     //
+    // .git/
     // .gitignore
     // foo/
     //   .gitignore
@@ -727,6 +729,7 @@ sherlock!(no_parent_ignore_git, "Sherlock", ".",
     // In other words, we should only see results from `sherlock`, not from
     // `watson`.
     wd.remove("sherlock");
+    wd.create_dir(".git");
     wd.create(".gitignore", "sherlock\n");
     wd.create_dir("foo");
     wd.create("foo/.gitignore", "watson\n");
@@ -850,6 +853,7 @@ sherlock:but Doctor Watson has to have it taken out for him and dusted,
 
 // See: https://github.com/BurntSushi/ripgrep/issues/16
 clean!(regression_16, "xyz", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "ghi/");
     wd.create_dir("ghi");
     wd.create_dir("def/ghi");
@@ -905,6 +909,7 @@ clean!(regression_50, "xyz", ".", |wd: WorkDir, mut cmd: Command| {
 
 // See: https://github.com/BurntSushi/ripgrep/issues/65
 clean!(regression_65, "xyz", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "a/");
     wd.create_dir("a");
     wd.create("a/foo", "xyz");
@@ -914,6 +919,7 @@ clean!(regression_65, "xyz", ".", |wd: WorkDir, mut cmd: Command| {
 
 // See: https://github.com/BurntSushi/ripgrep/issues/67
 clean!(regression_67, "test", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "/*\n!/dir");
     wd.create_dir("dir");
     wd.create_dir("foo");
@@ -926,6 +932,7 @@ clean!(regression_67, "test", ".", |wd: WorkDir, mut cmd: Command| {
 
 // See: https://github.com/BurntSushi/ripgrep/issues/87
 clean!(regression_87, "test", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "foo\n**no-vcs**");
     wd.create("foo", "test");
     wd.assert_err(&mut cmd);
@@ -933,6 +940,7 @@ clean!(regression_87, "test", ".", |wd: WorkDir, mut cmd: Command| {
 
 // See: https://github.com/BurntSushi/ripgrep/issues/90
 clean!(regression_90, "test", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "!.foo");
     wd.create(".foo", "test");
 
@@ -993,6 +1001,7 @@ clean!(regression_127, "Sherlock", ".", |wd: WorkDir, mut cmd: Command| {
     // ripgrep should ignore 'foo/sherlock' giving us results only from
     // 'foo/watson' but on Windows ripgrep will include both 'foo/sherlock' and
     // 'foo/watson' in the search results.
+    wd.create_dir(".git");
     wd.create(".gitignore", "foo/sherlock\n");
     wd.create_dir("foo");
     wd.create("foo/sherlock", hay::SHERLOCK);
@@ -1020,6 +1029,7 @@ clean!(regression_128, "x", ".", |wd: WorkDir, mut cmd: Command| {
 // TODO(burntsushi): Darwin doesn't like this test for some reason.
 #[cfg(not(target_os = "macos"))]
 clean!(regression_131, "test", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", "TopÑapa");
     wd.create("TopÑapa", "test");
     wd.assert_err(&mut cmd);
@@ -1307,6 +1317,7 @@ clean!(regression_599, "^$", "input.txt", |wd: WorkDir, mut cmd: Command| {
 
 // See: https://github.com/BurntSushi/ripgrep/issues/807
 clean!(regression_807, "test", ".", |wd: WorkDir, mut cmd: Command| {
+    wd.create_dir(".git");
     wd.create(".gitignore", ".a/b");
     wd.create_dir(".a/b");
     wd.create_dir(".a/c");
@@ -1316,6 +1327,12 @@ clean!(regression_807, "test", ".", |wd: WorkDir, mut cmd: Command| {
     cmd.arg("--hidden");
     let lines: String = wd.stdout(&mut cmd);
     assert_eq!(lines, format!("{}:test\n", path(".a/c/file")));
+});
+
+// See: https://github.com/BurntSushi/ripgrep/issues/900
+sherlock!(regression_900, "-fpat", "sherlock", |wd: WorkDir, mut cmd: Command| {
+    wd.create("pat", "");
+    wd.assert_err(&mut cmd);
 });
 
 // See: https://github.com/BurntSushi/ripgrep/issues/1
@@ -1733,6 +1750,26 @@ sherlock!(feature_419_zero_as_shortcut_for_null, "Sherlock", ".",
 });
 
 #[test]
+fn preprocessing() {
+    if !cmd_exists("xzcat") {
+        return;
+    }
+    let xz_file = include_bytes!("./data/sherlock.xz");
+
+    let wd = WorkDir::new("feature_preprocessing");
+    wd.create_bytes("sherlock.xz", xz_file);
+
+    let mut cmd = wd.command();
+    cmd.arg("--pre").arg("xzcat").arg("Sherlock").arg("sherlock.xz");
+    let lines: String = wd.stdout(&mut cmd);
+    let expected = "\
+For the Doctor Watsons of this world, as opposed to the Sherlock
+be, to a very large extent, the result of luck. Sherlock Holmes
+";
+    assert_eq!(lines, expected);
+}
+
+#[test]
 fn compressed_gzip() {
     if !cmd_exists("gzip") {
         return;
@@ -1793,6 +1830,26 @@ be, to a very large extent, the result of luck. Sherlock Holmes
 }
 
 #[test]
+fn compressed_lz4() {
+    if !cmd_exists("lz4") {
+        return;
+    }
+    let lz4_file = include_bytes!("./data/sherlock.lz4");
+
+    let wd = WorkDir::new("feature_search_compressed");
+    wd.create_bytes("sherlock.lz4", lz4_file);
+
+    let mut cmd = wd.command();
+    cmd.arg("-z").arg("Sherlock").arg("sherlock.lz4");
+    let lines: String = wd.stdout(&mut cmd);
+    let expected = "\
+For the Doctor Watsons of this world, as opposed to the Sherlock
+be, to a very large extent, the result of luck. Sherlock Holmes
+";
+    assert_eq!(lines, expected);
+}
+
+#[test]
 fn compressed_lzma() {
     if !cmd_exists("xz") {
         return;
@@ -1827,7 +1884,7 @@ fn compressed_failing_gzip() {
 
     let output = cmd.output().unwrap();
     let err = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(err.contains("not in gzip format"), true);
+    assert!(!err.is_empty());
 }
 
 sherlock!(feature_196_persistent_config, "sherlock",

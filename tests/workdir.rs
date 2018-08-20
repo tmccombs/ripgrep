@@ -21,7 +21,8 @@ pub struct WorkDir {
     /// The directory in which this test executable is running.
     root: PathBuf,
     /// The directory in which the test should run. If a test needs to create
-    /// files, they should go in here.
+    /// files, they should go in here. This directory is also used as the CWD
+    /// for any processes created by the test.
     dir: PathBuf,
 }
 
@@ -31,9 +32,15 @@ impl WorkDir {
     /// to a logical grouping of tests.
     pub fn new(name: &str) -> WorkDir {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let root = env::current_exe().unwrap()
-            .parent().expect("executable's directory").to_path_buf();
-        let dir = root.join(TEST_DIR).join(name).join(&format!("{}", id));
+        let root = env::current_exe()
+            .unwrap()
+            .parent()
+            .expect("executable's directory")
+            .to_path_buf();
+        let dir = env::temp_dir()
+            .join(TEST_DIR)
+            .join(name)
+            .join(&format!("{}", id));
         nice_err(&dir, repeat(|| fs::create_dir_all(&dir)));
         WorkDir {
             root: root,
@@ -49,7 +56,11 @@ impl WorkDir {
 
     /// Try to create a new file with the given name and contents in this
     /// directory.
-    pub fn try_create<P: AsRef<Path>>(&self, name: P, contents: &str) -> io::Result<()> {
+    pub fn try_create<P: AsRef<Path>>(
+        &self,
+        name: P,
+        contents: &str,
+    ) -> io::Result<()> {
         let path = self.dir.join(name);
         self.try_create_bytes(path, contents.as_bytes())
     }
@@ -70,7 +81,11 @@ impl WorkDir {
 
     /// Try to create a new file with the given name and contents in this
     /// directory.
-    fn try_create_bytes<P: AsRef<Path>>(&self, path: P, contents: &[u8]) -> io::Result<()> {
+    fn try_create_bytes<P: AsRef<Path>>(
+        &self,
+        path: P,
+        contents: &[u8],
+    ) -> io::Result<()> {
         let mut file = File::create(&path)?;
         file.write_all(contents)?;
         file.flush()
@@ -99,28 +114,11 @@ impl WorkDir {
     }
 
     /// Returns the path to the ripgrep executable.
-    #[cfg(not(windows))]
     pub fn bin(&self) -> PathBuf {
-        let path = self.root.join("rg");
-        if !path.is_file() {
-            // Looks like a recent version of Cargo changed the cwd or the
-            // location of the test executable.
-            self.root.join("../rg")
-        } else {
-            path
-        }
-    }
-
-    /// Returns the path to the ripgrep executable.
-    #[cfg(windows)]
-    pub fn bin(&self) -> PathBuf {
-        let path = self.root.join("rg.exe");
-        if !path.is_file() {
-            // Looks like a recent version of Cargo changed the cwd or the
-            // location of the test executable.
+        if cfg!(windows) {
             self.root.join("../rg.exe")
         } else {
-            path
+            self.root.join("../rg")
         }
     }
 
@@ -190,7 +188,11 @@ impl WorkDir {
         match stdout.parse() {
             Ok(t) => t,
             Err(err) => {
-                panic!("could not convert from string: {:?}\n\n{}", err, stdout);
+                panic!(
+                    "could not convert from string: {:?}\n\n{}",
+                    err,
+                    stdout
+                );
             }
         }
     }
@@ -221,7 +223,10 @@ impl WorkDir {
             write!(stdin, "{}", input)
         });
 
-        let output = self.expect_success(cmd, child.wait_with_output().unwrap());
+        let output = self.expect_success(
+            cmd,
+            child.wait_with_output().unwrap(),
+        );
         worker.join().unwrap().unwrap();
         output
     }
@@ -277,8 +282,13 @@ impl WorkDir {
         }
     }
 
-    /// Runs the given command and asserts that its exit code matches expected exit code.
-    pub fn assert_exit_code(&self, expected_code: i32, cmd: &mut process::Command) {
+    /// Runs the given command and asserts that its exit code matches expected
+    /// exit code.
+    pub fn assert_exit_code(
+        &self,
+        expected_code: i32,
+        cmd: &mut process::Command,
+    ) {
         let code = cmd.status().unwrap().code().unwrap();
 
         assert_eq!(

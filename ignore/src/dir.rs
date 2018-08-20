@@ -66,6 +66,8 @@ struct IgnoreOptions {
     hidden: bool,
     /// Whether to read .ignore files.
     ignore: bool,
+    /// Whether to respect any ignore files in parent directories.
+    parents: bool,
     /// Whether to read git's global gitignore file.
     git_global: bool,
     /// Whether to read .gitignore files.
@@ -152,6 +154,15 @@ impl Ignore {
         &self,
         path: P,
     ) -> (Ignore, Option<Error>) {
+        if !self.0.opts.parents
+            && !self.0.opts.git_ignore
+            && !self.0.opts.git_exclude
+            && !self.0.opts.git_global
+        {
+            // If we never need info from parent directories, then don't do
+            // anything.
+            return (self.clone(), None);
+        }
         if !self.is_root() {
             panic!("Ignore::add_parents called on non-root matcher");
         }
@@ -185,6 +196,7 @@ impl Ignore {
             errs.maybe_push(err);
             igtmp.is_absolute_parent = true;
             igtmp.working_dir = Some(working_dir.clone());
+            igtmp.has_git = parent.join(".git").exists();
             ig = Ignore(Arc::new(igtmp));
             compiled.insert(parent.as_os_str().to_os_string(), ig.clone());
         }
@@ -268,9 +280,11 @@ impl Ignore {
     fn has_any_ignore_rules(&self) -> bool {
         let opts = self.0.opts;
         let has_custom_ignore_files = !self.0.custom_ignore_filenames.is_empty();
+        let has_explicit_ignores = !self.0.explicit_ignores.is_empty();
 
         opts.ignore || opts.git_global || opts.git_ignore
                     || opts.git_exclude || has_custom_ignore_files
+                    || has_explicit_ignores
     }
 
     /// Returns a match indicating whether the given file path should be
@@ -333,6 +347,7 @@ impl Ignore {
     ) -> Match<IgnoreMatch<'a>> {
         let (mut m_custom_ignore, mut m_ignore, mut m_gi, mut m_gi_exclude, mut m_explicit) =
             (Match::None, Match::None, Match::None, Match::None, Match::None);
+        let any_git = self.parents().any(|ig| ig.0.has_git);
         let mut saw_git = false;
         for ig in self.parents().take_while(|ig| !ig.0.is_absolute_parent) {
             if m_custom_ignore.is_none() {
@@ -345,42 +360,44 @@ impl Ignore {
                     ig.0.ignore_matcher.matched(path, is_dir)
                       .map(IgnoreMatch::gitignore);
             }
-            if !saw_git && m_gi.is_none() {
+            if any_git && !saw_git && m_gi.is_none() {
                 m_gi =
                     ig.0.git_ignore_matcher.matched(path, is_dir)
                       .map(IgnoreMatch::gitignore);
             }
-            if !saw_git && m_gi_exclude.is_none() {
+            if any_git && !saw_git && m_gi_exclude.is_none() {
                 m_gi_exclude =
                     ig.0.git_exclude_matcher.matched(path, is_dir)
                       .map(IgnoreMatch::gitignore);
             }
             saw_git = saw_git || ig.0.has_git;
         }
-        if let Some(working_dir) = self.working_dir() {
-            let path = working_dir.join(path);
-            for ig in self.parents().skip_while(|ig|!ig.0.is_absolute_parent) {
-                if m_custom_ignore.is_none() {
-                    m_custom_ignore =
-                        ig.0.custom_ignore_matcher.matched(&path, is_dir)
-                          .map(IgnoreMatch::gitignore);
+        if self.0.opts.parents {
+            if let Some(working_dir) = self.working_dir() {
+                let path = working_dir.join(path);
+                for ig in self.parents().skip_while(|ig|!ig.0.is_absolute_parent) {
+                    if m_custom_ignore.is_none() {
+                        m_custom_ignore =
+                            ig.0.custom_ignore_matcher.matched(&path, is_dir)
+                              .map(IgnoreMatch::gitignore);
+                    }
+                    if m_ignore.is_none() {
+                        m_ignore =
+                            ig.0.ignore_matcher.matched(&path, is_dir)
+                              .map(IgnoreMatch::gitignore);
+                    }
+                    if any_git && !saw_git && m_gi.is_none() {
+                        m_gi =
+                            ig.0.git_ignore_matcher.matched(&path, is_dir)
+                              .map(IgnoreMatch::gitignore);
+                    }
+                    if any_git && !saw_git && m_gi_exclude.is_none() {
+                        m_gi_exclude =
+                            ig.0.git_exclude_matcher.matched(&path, is_dir)
+                              .map(IgnoreMatch::gitignore);
+                    }
+                    saw_git = saw_git || ig.0.has_git;
                 }
-                if m_ignore.is_none() {
-                    m_ignore =
-                        ig.0.ignore_matcher.matched(&path, is_dir)
-                          .map(IgnoreMatch::gitignore);
-                }
-                if !saw_git && m_gi.is_none() {
-                    m_gi =
-                        ig.0.git_ignore_matcher.matched(&path, is_dir)
-                          .map(IgnoreMatch::gitignore);
-                }
-                if !saw_git && m_gi_exclude.is_none() {
-                    m_gi_exclude =
-                        ig.0.git_exclude_matcher.matched(&path, is_dir)
-                          .map(IgnoreMatch::gitignore);
-                }
-                saw_git = saw_git || ig.0.has_git;
             }
         }
         for gi in self.0.explicit_ignores.iter().rev() {
@@ -389,8 +406,14 @@ impl Ignore {
             }
             m_explicit = gi.matched(&path, is_dir).map(IgnoreMatch::gitignore);
         }
-        let m_global = self.0.git_global_matcher.matched(&path, is_dir)
-                           .map(IgnoreMatch::gitignore);
+        let m_global =
+            if any_git {
+                self.0.git_global_matcher
+                    .matched(&path, is_dir)
+                    .map(IgnoreMatch::gitignore)
+            } else {
+                Match::None
+            };
 
         m_custom_ignore.or(m_ignore).or(m_gi).or(m_gi_exclude).or(m_global).or(m_explicit)
     }
@@ -457,6 +480,7 @@ impl IgnoreBuilder {
             opts: IgnoreOptions {
                 hidden: true,
                 ignore: true,
+                parents: true,
                 git_global: true,
                 git_ignore: true,
                 git_exclude: true,
@@ -556,6 +580,17 @@ impl IgnoreBuilder {
     /// This is enabled by default.
     pub fn ignore(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.ignore = yes;
+        self
+    }
+
+    /// Enables reading ignore files from parent directories.
+    ///
+    /// If this is enabled, then .gitignore files in parent directories of each
+    /// file path given are respected. Otherwise, they are ignored.
+    ///
+    /// This is enabled by default.
+    pub fn parents(&mut self, yes: bool) -> &mut IgnoreBuilder {
+        self.opts.parents = yes;
         self
     }
 
@@ -681,12 +716,25 @@ mod tests {
     #[test]
     fn gitignore() {
         let td = TempDir::new("ignore-test-").unwrap();
+        mkdirp(td.path().join(".git"));
         wfile(td.path().join(".gitignore"), "foo\n!bar");
 
         let (ig, err) = IgnoreBuilder::new().build().add_child(td.path());
         assert!(err.is_none());
         assert!(ig.matched("foo", false).is_ignore());
         assert!(ig.matched("bar", false).is_whitelist());
+        assert!(ig.matched("baz", false).is_none());
+    }
+
+    #[test]
+    fn gitignore_no_git() {
+        let td = TempDir::new("ignore-test-").unwrap();
+        wfile(td.path().join(".gitignore"), "foo\n!bar");
+
+        let (ig, err) = IgnoreBuilder::new().build().add_child(td.path());
+        assert!(err.is_none());
+        assert!(ig.matched("foo", false).is_none());
+        assert!(ig.matched("bar", false).is_none());
         assert!(ig.matched("baz", false).is_none());
     }
 
@@ -799,6 +847,7 @@ mod tests {
     #[test]
     fn errored_partial() {
         let td = TempDir::new("ignore-test-").unwrap();
+        mkdirp(td.path().join(".git"));
         wfile(td.path().join(".gitignore"), "f**oo\nbar");
 
         let (ig, err) = IgnoreBuilder::new().build().add_child(td.path());

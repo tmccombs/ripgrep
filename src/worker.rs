@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use encoding_rs::Encoding;
 use grep::Grep;
@@ -8,8 +8,10 @@ use ignore::DirEntry;
 use memmap::Mmap;
 use termcolor::WriteColor;
 
-use decoder::DecodeReader;
+// use decoder::DecodeReader;
+use encoding_rs_io::DecodeReaderBytesBuilder;
 use decompressor::{self, DecompressionReader};
+use preprocessor::PreprocessorReader;
 use pathutil::strip_prefix;
 use printer::Printer;
 use search_buffer::BufferSearcher;
@@ -45,6 +47,7 @@ struct Options {
     no_messages: bool,
     quiet: bool,
     text: bool,
+    preprocessor: Option<PathBuf>,
     search_zip_files: bool
 }
 
@@ -68,6 +71,7 @@ impl Default for Options {
             quiet: false,
             text: false,
             search_zip_files: false,
+            preprocessor: None,
         }
     }
 }
@@ -222,6 +226,12 @@ impl WorkerBuilder {
         self.opts.search_zip_files = yes;
         self
     }
+
+    /// If non-empty, search output of preprocessor run on each file
+    pub fn preprocessor(mut self, command: Option<PathBuf>) -> Self {
+        self.opts.preprocessor = command;
+        self
+    }
 }
 
 /// Worker is responsible for executing searches on file paths, while choosing
@@ -250,7 +260,18 @@ impl Worker {
             }
             Work::DirEntry(dent) => {
                 let mut path = dent.path();
-                if self.opts.search_zip_files
+                if self.opts.preprocessor.is_some() {
+                    let cmd = self.opts.preprocessor.clone().unwrap();
+                    match PreprocessorReader::from_cmd_path(cmd, path) {
+                        Ok(reader) => self.search(printer, path, reader),
+                        Err(err) => {
+                            if !self.opts.no_messages {
+                                eprintln!("{}", err);
+                            }
+                            return 0;
+                        }
+                    }
+                } else if self.opts.search_zip_files
                      && decompressor::is_compressed(path)
                 {
                     match DecompressionReader::from_path(path) {
@@ -299,8 +320,10 @@ impl Worker {
         path: &Path,
         rdr: R,
     ) -> Result<u64> {
-        let rdr = DecodeReader::new(
-            rdr, &mut self.decodebuf, self.opts.encoding);
+        let rdr = DecodeReaderBytesBuilder::new()
+            .encoding(self.opts.encoding)
+            .utf8_passthru(true)
+            .build_with_buffer(rdr, &mut self.decodebuf)?;
         let searcher = Searcher::new(
             &mut self.inpbuf, printer, &self.grep, path, rdr);
         searcher
