@@ -351,18 +351,34 @@ impl GlobSet {
         false
     }
 
-    /// Returns true if ALL globs in this set match the path given.
+    /// Returns true if all globs in this set match the path given.
+    ///
+    /// This will return true if the set of globs is empty, as in that case all
+    /// `0` of the globs will match.
+    ///
+    /// ```
+    /// use globset::{Glob, GlobSetBuilder};
+    ///
+    /// let mut builder = GlobSetBuilder::new();
+    /// builder.add(Glob::new("src/*").unwrap());
+    /// builder.add(Glob::new("**/*.rs").unwrap());
+    /// let set = builder.build().unwrap();
+    ///
+    /// assert!(set.matches_all("src/foo.rs"));
+    /// assert!(!set.matches_all("src/bar.c"));
+    /// assert!(!set.matches_all("test.rs"));
+    /// ```
     pub fn matches_all<P: AsRef<Path>>(&self, path: P) -> bool {
         self.matches_all_candidate(&Candidate::new(path.as_ref()))
     }
 
     /// Returns ture if all globs in this set match the path given.
     ///
-    /// This takes a Candidate as input, which can be used to amortize the
-    /// cost of peparing a path for matching.
+    /// This takes a Candidate as input, which can be used to amortize the cost
+    /// of peparing a path for matching.
     ///
-    /// This will return true if the set of globs is empty, as in that case all `0` of
-    /// the globs will match.
+    /// This will return true if the set of globs is empty, as in that case all
+    /// `0` of the globs will match.
     pub fn matches_all_candidate(&self, path: &Candidate<'_>) -> bool {
         for strat in &self.strats {
             if !strat.is_match(path) {
@@ -1057,18 +1073,5 @@ mod tests {
 
         let matches = set.matches("nada");
         assert_eq!(0, matches.len());
-    }
-
-    #[test]
-    fn matches_all_works() {
-        let mut builder = GlobSetBuilder::new();
-        builder.add(Glob::new("src/*").unwrap());
-        builder.add(Glob::new("**/*.rs").unwrap());
-        let set = builder.build().unwrap();
-
-        println!("matches={:?}", set.matches("src/foo.rs"));
-        assert!(set.matches_all("src/foo.rs"));
-        assert!(!set.matches_all("src/bar.c"));
-        assert!(!set.matches_all("test.rs"));
     }
 }
